@@ -1,0 +1,36 @@
+# Checks that GitHub's servers can read and download from TikTok. Posts nothing, changes nothing.
+name: test-tiktok
+
+on:
+  workflow_dispatch:
+    inputs:
+      username:
+        description: TikTok username to test with
+        default: tiktok
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: List and download newest video
+        env:
+          TEST_USER: ${{ inputs.username }}
+        run: |
+          python - <<'EOF'
+          import os, crosspost
+          videos = crosspost.list_tiktok_videos(os.environ["TEST_USER"], limit=3)
+          print(f"LIST OK: found {len(videos)} videos")
+          path, caption = crosspost.download_tiktok(videos[0]["url"])
+          print(f"DOWNLOAD OK: {path.name} {path.stat().st_size} bytes")
+          print(f"CAPTION: {caption[:80]!r}")
+          EOF
