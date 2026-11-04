@@ -1,13 +1,15 @@
 """
 UGC cross-posting agent.
 
-Watches your TikTok profile. When a new video shows up, it downloads it
-and re-posts it to every platform you've enabled in .env
-(YouTube Shorts, Instagram Reels, Facebook Reels, X).
+Record on your phone, drop the video in your Google Drive inbox folder, and it gets
+posted to every platform you've enabled (YouTube Shorts, Instagram Reels, Facebook Reels, X).
+
+SOURCE=drive (default) watches the Drive folder. SOURCE=tiktok watches your TikTok profile
+instead (currently blocked by TikTok, see sources/tiktok.py).
 
 Usage:
     python crosspost.py            # run forever, checking every CHECK_EVERY_MINUTES
-    python crosspost.py --once     # check one time and exit (good for Task Scheduler)
+    python crosspost.py --once     # check one time and exit (what the cloud runs)
     python crosspost.py --dry-run  # show what would be posted, post nothing
 """
 
@@ -20,10 +22,11 @@ import sys
 import time
 from pathlib import Path
 
-import yt_dlp
 from dotenv import load_dotenv
 
+import convert
 from platforms import facebook, instagram, x_twitter, youtube
+from sources import drive, tiktok
 
 ROOT = Path(__file__).parent
 DOWNLOADS = ROOT / "downloads"
@@ -47,8 +50,7 @@ PLATFORMS = {
     "x": x_twitter,
 }
 
-# TikTok-only tags that look spammy (or get suppressed) elsewhere
-TIKTOK_ONLY_TAGS = {"#fyp", "#foryou", "#foryoupage", "#fypシ", "#fypage", "#tiktok", "#viral", "#xyzbca", "#tiktokmademebuyit"}
+SOURCES = {"drive": drive, "tiktok": tiktok}
 
 
 # ---------- state ----------
@@ -60,54 +62,17 @@ def load_state():
 
 
 def save_state(state):
-    STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
-
-
-# ---------- tiktok ----------
-
-def list_tiktok_videos(username, limit=10):
-    """Return the newest videos on the profile, newest first."""
-    opts = {"quiet": True, "extract_flat": True, "playlistend": limit, "skip_download": True}
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(f"https://www.tiktok.com/@{username}", download=False)
-    return [
-        {"id": str(e["id"]), "url": e.get("url") or f"https://www.tiktok.com/@{username}/video/{e['id']}"}
-        for e in info.get("entries") or []
-        if e and e.get("id")
-    ]
-
-
-def download_tiktok(url):
-    """Download one video. Returns (file_path, caption)."""
-    DOWNLOADS.mkdir(exist_ok=True)
-    opts = {
-        "quiet": True,
-        "outtmpl": str(DOWNLOADS / "%(id)s.%(ext)s"),
-        # prefer the clean (no watermark) h264 mp4 so every platform accepts it
-        "format": "bv*[vcodec^=h264]+ba/b[ext=mp4]/b",
-        "merge_output_format": "mp4",
-    }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        path = Path(ydl.prepare_filename(info)).with_suffix(".mp4")
-    caption = info.get("description") or info.get("title") or ""
-    return path, caption
+    STATE_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 # ---------- captions ----------
 
-def clean_caption(caption):
-    words = [w for w in caption.split() if w.lower() not in TIKTOK_ONLY_TAGS]
-    text = " ".join(words).strip()
-    extra = (os.getenv("EXTRA_HASHTAGS") or "").strip()
-    if extra:
-        text = f"{text} {extra}".strip()
-    return text
-
-
 def captions_for(caption):
     """Per-platform caption variants."""
-    base = clean_caption(caption)
+    base = caption.strip()
+    extra = (os.getenv("EXTRA_HASHTAGS") or "").strip()
+    if extra:
+        base = f"{base} {extra}".strip()
     hashtags_removed = re.sub(r"#\w+", "", base).strip()
     title = (hashtags_removed or (os.getenv("DEFAULT_TITLE") or "New video")).split("\n")[0][:90]
     return {
@@ -128,61 +93,73 @@ def enabled_platforms():
     return [n for n in names if n in PLATFORMS]
 
 
-def process(video, state, platforms, dry_run):
-    vid = video["id"]
-    record = state["videos"].setdefault(vid, {"url": video["url"], "posted": {}})
+def process(source, item, state, platforms, dry_run):
+    record = state["videos"].setdefault(item["id"], {"name": item.get("name") or item.get("url"), "posted": {}})
     todo = [p for p in platforms if p not in record["posted"]]
     if not todo:
+        source.mark_done(item)
         return
 
-    log.info("New TikTok %s -> posting to %s", vid, ", ".join(todo))
+    log.info("New video %s -> %s", item.get("name") or item["id"], ", ".join(todo))
     if dry_run:
+        log.info("  caption: %r", item.get("caption"))
         return
 
-    path, caption = download_tiktok(video["url"])
-    caps = captions_for(caption)
+    original = source.download(item, DOWNLOADS)
+    path = convert.for_upload(original)
+    caps = captions_for(item.get("caption") or "")
 
     for name in todo:
         try:
             result = PLATFORMS[name].post(path, **caps[name])
             record["posted"][name] = result
+            record.get("errors", {}).pop(name, None)
             log.info("  %-9s OK  %s", name, result)
         except Exception as e:  # keep going so one broken platform doesn't block the others
             record.setdefault("errors", {})[name] = str(e)
             log.error("  %-9s FAILED  %s", name, e)
         save_state(state)
 
-    if all(p in record["posted"] for p in platforms) and (os.getenv("DELETE_AFTER_POST") or "true").lower() == "true":
-        path.unlink(missing_ok=True)
+    if all(p in record["posted"] for p in platforms):
+        source.mark_done(item)
+        if (os.getenv("DELETE_AFTER_POST") or "true").lower() == "true":
+            for f in {original, path}:
+                f.unlink(missing_ok=True)
 
 
 def check_once(dry_run=False, backfill=False):
-    username = (os.getenv("TIKTOK_USERNAME") or "").lstrip("@")
-    if not username:
+    source_name = (os.getenv("SOURCE") or "drive").lower()
+    source = SOURCES[source_name]
+    needed = "DRIVE_FOLDER_ID" if source_name == "drive" else "TIKTOK_USERNAME"
+    if not os.getenv(needed):
         # exit quietly so the cloud schedule doesn't fail every 15 min before secrets are added
-        log.warning("TIKTOK_USERNAME isn't set (in .env, or as a GitHub secret). Nothing to do.")
+        log.warning("%s isn't set (in .env, or as a GitHub secret). Nothing to do.", needed)
         return
 
     platforms = enabled_platforms()
     state = load_state()
-    videos = list_tiktok_videos(username)
-    log.info("Checked @%s: %d recent videos", username, len(videos))
+    items = source.list_new()
+    log.info("Checked %s: %d video(s) waiting", source_name, len(items))
 
-    # First run: remember what's already there so we don't dump your whole backlog everywhere.
-    if not state["initialized"] and not backfill:
+    # TikTok only: on first run, remember what's already there so your backlog isn't reposted.
+    # (The Drive inbox only holds what you put there, so everything in it gets posted.)
+    if source_name == "tiktok" and not state["initialized"] and not backfill:
         if dry_run:
-            log.info("First run (dry run): would mark %d existing videos as already posted.", len(videos))
+            log.info("First run (dry run): would mark %d existing videos as already posted.", len(items))
             return
-        for v in videos:
-            state["videos"].setdefault(v["id"], {"url": v["url"], "posted": {p: "skipped (existed before agent)" for p in platforms}})
+        for v in items:
+            state["videos"].setdefault(v["id"], {"name": v["url"], "posted": {p: "skipped (existed before agent)" for p in platforms}})
         state["initialized"] = True
         save_state(state)
-        log.info("First run: marked %d existing videos as already posted. New ones will be cross-posted.", len(videos))
+        log.info("First run: marked %d existing videos as already posted.", len(items))
         return
 
     state["initialized"] = True
-    for video in reversed(videos):  # oldest first so platforms keep the same order
-        process(video, state, platforms, dry_run)
+    for item in items:
+        try:
+            process(source, item, state, platforms, dry_run)
+        except Exception as e:
+            log.error("Couldn't process %s: %s", item.get("name") or item["id"], e)
     if not dry_run:
         save_state(state)
 
@@ -191,7 +168,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true", help="check one time and exit")
     ap.add_argument("--dry-run", action="store_true", help="don't post anything")
-    ap.add_argument("--backfill", action="store_true", help="on first run, also post videos that already exist")
+    ap.add_argument("--backfill", action="store_true", help="(tiktok) on first run, also post videos that already exist")
     args = ap.parse_args()
 
     if args.once or args.dry_run:
@@ -199,7 +176,7 @@ def main():
         return
 
     minutes = int((os.getenv("CHECK_EVERY_MINUTES") or "15"))
-    log.info("Watching TikTok every %d min. Ctrl+C to stop.", minutes)
+    log.info("Checking every %d min. Ctrl+C to stop.", minutes)
     while True:
         try:
             check_once(backfill=args.backfill)

@@ -1,103 +1,108 @@
 # UGC Cross-Poster
 
-Post on TikTok → it shows up on YouTube Shorts, Instagram Reels, Facebook Reels (and X if you want).
+Record on your phone → share it to a Google Drive folder → it posts to **YouTube Shorts, Instagram Reels,
+Facebook Reels** (and X if you want). Runs free in the cloud, so your laptop can stay off.
 
-**How it works:** every 15 minutes it checks your public TikTok profile. When there's a video it hasn't seen,
-it downloads the clean (no watermark) mp4, cleans the caption (drops `#fyp`, `#foryou`, etc.), and uploads it
-to each platform. `state.json` remembers what's been posted so nothing double-posts, and if one platform fails
-it retries just that one on the next check.
+**How it works:** every 15 minutes the agent checks your Drive "inbox" folder. Any video in there gets
+converted so every platform accepts it (iPhone .mov/HEVC → .mp4), then posted everywhere. When it's
+done, the video moves into a `Posted` subfolder. If one platform fails, the others still post and it
+retries only the failed one next time. `state.json` remembers what went where so nothing double-posts.
 
-On the **first run** it marks your existing TikToks as "already done", so it won't flood your other accounts
-with your backlog. Use `--backfill` if you actually want that.
+TikTok you post yourself, like you do now. (Automatic TikTok posting needs TikTok to approve your app.)
 
 ---
 
-## 1. Install
+## Daily use (phone only)
 
+1. Record your video.
+2. **Optional caption:** in the Google Drive app, rename the file to your caption,
+   e.g. `obsessed with this serum 😍 #skincare #ugc`. If you leave the camera name (`IMG_1234`),
+   it uses `DEFAULT_CAPTION`.
+3. Photos/Gallery → **Share** → **Drive** → pick your inbox folder. Done.
+
+Within about 15 minutes it's live everywhere.
+
+> **iPhone tip:** Settings → Camera → Formats → **Most Compatible**, and turn off **HDR Video**.
+> Videos upload faster and colors look right on every platform.
+
+---
+
+## One-time setup (laptop, ~30 min)
+
+### 1. Install
 ```
 pip install -r requirements.txt
 copy .env.example .env
 ```
 
-Put your TikTok username in `.env`, then test it (posts nothing):
+### 2. Make the Drive inbox
+In Google Drive, create a folder (e.g. `UGC Inbox`). Open it; the link looks like
+`drive.google.com/drive/folders/1AbC...xyz`. Put the `1AbC...xyz` part in `.env` as `DRIVE_FOLDER_ID`.
 
-```
-python crosspost.py --dry-run
-```
+### 3. Google login (YouTube + Drive, free)
+1. Go to <https://console.cloud.google.com> → create a project.
+2. **APIs & Services → Library** → enable **YouTube Data API v3** and **Google Drive API**.
+3. **OAuth consent screen** → External → fill in the app name and your email → add your email as a test user.
+4. Then click **Publish app** (status: *In production*). Skip this and Google logs you out every 7 days.
+   You don't need Google's verification for personal use; you'll just see an "unverified app" warning
+   when you log in → **Advanced → Go to app**.
+5. **Credentials → Create credentials → OAuth client ID → Desktop app** → download the JSON into this folder.
+6. Run `python auth_google.py client_secret_....json`, log in with the Google account that owns your
+   YouTube channel and the Drive folder, and paste the 3 lines it prints into `.env`.
 
-## 2. Connect each platform
+> YouTube may force uploads from new, unaudited API projects to private. If that happens, request
+> an audit in the Google Cloud console. Default quota is about 6 uploads/day.
 
-Only set up the ones you list in `POST_TO`.
-
-### YouTube Shorts (free, ~10 min)
-1. Go to <https://console.cloud.google.com> → new project → **APIs & Services → Library** → enable **YouTube Data API v3**.
-2. **OAuth consent screen** → External → add your own Google email as a test user.
-3. **Credentials → Create credentials → OAuth client ID → Desktop app** → download the JSON.
-4. Run `python auth_youtube.py path\to\that.json`, log in, and paste the 3 lines it prints into `.env`.
-
-> Heads-up: until Google verifies your app, uploads from unverified API projects may be forced to private.
-> Request an audit in the console if that happens. Default quota is ~6 uploads/day.
-
-### Instagram Reels + Facebook Reels (free, ~20 min)
+### 4. Instagram + Facebook (free)
 Requirements: Instagram must be a **Business or Creator** account linked to a **Facebook Page**.
 
-1. Go to <https://developers.facebook.com> → **Create app** → type *Business*.
+1. <https://developers.facebook.com> → **Create app** → type *Business*.
 2. Add the **Instagram Graph API** / **Facebook Login for Business** products.
-3. Open **Graph API Explorer**, pick your app, and generate a User token with:
+3. **Graph API Explorer** → pick your app → generate a User token with:
    `instagram_basic, instagram_content_publish, pages_show_list, pages_read_engagement, pages_manage_posts, business_management`
-4. Swap it for a long-lived token (Access Token Debugger → *Extend*). Paste it as `META_ACCESS_TOKEN`.
+4. Access Token Debugger → **Extend** → paste the long-lived token as `META_ACCESS_TOKEN`.
 5. In the Explorer run `me/accounts?fields=id,name,access_token,instagram_business_account`:
    - `id` → `FB_PAGE_ID`
    - `access_token` → `FB_PAGE_TOKEN`
    - `instagram_business_account.id` → `IG_USER_ID`
 
-> Page tokens taken from a long-lived user token don't expire. The user token lasts ~60 days, so refresh
-> `META_ACCESS_TOKEN` every couple months (the log will say "Session has expired" when it's time).
+> The user token lasts ~60 days. When the log says "Session has expired", redo steps 3–5.
 
-### X / Twitter (paid)
-Posting video needs a paid X API plan. At <https://developer.x.com> create an app with **Read and write**
-permissions, then paste the API key/secret and access token/secret into `.env` and add `x` to `POST_TO`.
+### 5. X / Twitter (optional, paid)
+Video posting needs a paid X API plan. At <https://developer.x.com> create an app with **Read and write**
+permissions, paste the 4 keys into `.env`, and add `x` to `POST_TO`.
 
-## 3. Run it
+---
 
-Leave it running in a terminal:
+## Test it
+
+Start safe: set `POST_TO=youtube` and `YT_PRIVACY=private` in `.env`, drop one video in the Drive folder, then:
 
 ```
-python crosspost.py
+python crosspost.py --dry-run     # shows what it found and the caption, posts nothing
+python crosspost.py --once        # posts for real
 ```
 
-**Or** have Windows run it automatically (no terminal needed): open **Task Scheduler → Create Basic Task**,
-trigger *Daily*, then in the task's properties set *Repeat task every 15 minutes*. Action: *Start a program*
-→ `run.bat`, arguments `--once`. Tick *Run whether user is logged on or not* if you want it running in the background.
+Check `crosspost.log` for links. If YouTube worked, add `instagram,facebook` to `POST_TO`, set
+`YT_PRIVACY=public`, and test again with another video.
 
-Your PC has to be on for this to work. For 24/7 without your PC, use the free cloud option below.
+## Run it in the cloud (free, GitHub Actions)
 
-## 4. Run it free in the cloud (GitHub Actions)
+`.github/workflows/crosspost.yml` runs `python crosspost.py --once` every 15 minutes on GitHub.
 
-`.github/workflows/crosspost.yml` runs the agent every 15 minutes on GitHub's servers, free.
+1. Upload your filled-in `.env` as hidden repo secrets: `gh secret set -f .env`
+2. Start a run now instead of waiting: `gh workflow run crosspost` (or the repo's **Actions** tab → **crosspost** → **Run workflow**).
 
-1. Push this folder to a GitHub repo. Make it **public** for unlimited free minutes (your tokens stay
-   hidden in secrets; only the code and `state.json` are visible). A private repo gets 2,000 free
-   minutes/month, so change the cron to `*/30 * * * *` if you go private.
-2. Upload your filled-in `.env` as repo secrets in one command:
-   ```
-   gh secret set -f .env
-   ```
-3. On GitHub → **Actions** tab → **crosspost** → **Run workflow** to test it right away.
-
-Notes: GitHub can run scheduled jobs a few minutes late. Whenever you change a token in `.env`, run
-`gh secret set -f .env` again.
+Re-run `gh secret set -f .env` whenever you change `.env`. GitHub may start scheduled runs a few minutes late.
 
 ## Files
 
 | File | What it is |
 |---|---|
-| `crosspost.py` | The agent: watch TikTok → download → post |
+| `crosspost.py` | The agent: check inbox → convert → post |
+| `sources/drive.py` | Google Drive inbox (default) |
+| `sources/tiktok.py` | TikTok profile watcher (`SOURCE=tiktok`, currently blocked by TikTok) |
+| `convert.py` | Converts phone videos to H.264 .mp4 |
 | `platforms/` | One uploader per platform |
 | `state.json` | What's been posted where (delete a video's entry to repost it) |
 | `crosspost.log` | Everything it did, with links to each post |
-
-## Tips
-- Captions: set `EXTRA_HASHTAGS` (e.g. `#ugc #ugccreator`) to add tags on every platform.
-- Re-post one video: delete its entry (or just one platform inside it) from `state.json`.
-- If TikTok downloads stop working, run `pip install -U yt-dlp`. TikTok changes things often and yt-dlp patches fast.
