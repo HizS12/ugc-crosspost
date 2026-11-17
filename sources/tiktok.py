@@ -46,3 +46,7 @@ def download(item, dest_dir):
 
 def mark_done(item):
     pass  # nothing to move; state.json remembers it
+
+
+def check():
+    return f"found {len(list_new(limit=3))} recent TikToks"

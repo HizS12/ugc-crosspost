@@ -17,3 +17,8 @@ def post(path, caption):
         description=caption, access_token=token,
     )
     return f"https://www.facebook.com/reel/{start['video_id']}"
+
+
+def check():
+    page = graph("GET", os.environ["FB_PAGE_ID"], fields="name", access_token=os.environ["FB_PAGE_TOKEN"])
+    return f"can post to the Page \"{page['name']}\""

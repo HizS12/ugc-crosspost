@@ -101,3 +101,10 @@ def mark_done(item):
     ).execute()["id"]
     for fid in filter(None, [item["id"], item.get("sidecar_id")]):
         svc.files().update(fileId=fid, addParents=posted, removeParents=_folder_id(), fields="id").execute()
+
+
+def check():
+    folder = _service().files().get(fileId=_folder_id(), fields="name").execute()
+    waiting = list_new()
+    names = ", ".join(f"{i['name']} (caption: {i['caption']!r})" for i in waiting) or "empty"
+    return f"folder \"{folder['name']}\" found, {len(waiting)} video(s) waiting: {names}"

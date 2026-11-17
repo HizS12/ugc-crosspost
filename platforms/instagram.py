@@ -31,3 +31,8 @@ def post(path, caption):
     media = graph("POST", f"{ig_user}/media_publish", creation_id=container["id"], access_token=token)
     link = graph("GET", media["id"], fields="permalink", access_token=token)
     return link.get("permalink", media["id"])
+
+
+def check():
+    me = graph("GET", os.environ["IG_USER_ID"], fields="username", access_token=os.environ["META_ACCESS_TOKEN"])
+    return f"can post as @{me['username']}"

@@ -79,6 +79,7 @@ permissions, paste the 4 keys into `.env`, and add `x` to `POST_TO`.
 Start safe: set `POST_TO=youtube` and `YT_PRIVACY=private` in `.env`, drop one video in the Drive folder, then:
 
 ```
+python crosspost.py --check       # tests every account in .env, posts nothing
 python crosspost.py --dry-run     # shows what it found and the caption, posts nothing
 python crosspost.py --once        # posts for real
 ```

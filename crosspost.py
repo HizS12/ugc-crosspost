@@ -11,6 +11,7 @@ Usage:
     python crosspost.py            # run forever, checking every CHECK_EVERY_MINUTES
     python crosspost.py --once     # check one time and exit (what the cloud runs)
     python crosspost.py --dry-run  # show what would be posted, post nothing
+    python crosspost.py --check    # test every account connection, post nothing
 """
 
 import argparse
@@ -164,13 +165,34 @@ def check_once(dry_run=False, backfill=False):
         save_state(state)
 
 
+def check_connections():
+    """Try every account in .env without posting anything."""
+    source_name = (os.getenv("SOURCE") or "drive").lower()
+    checks = [(f"source: {source_name}", SOURCES[source_name])] + [(p, PLATFORMS[p]) for p in enabled_platforms()]
+    ok = True
+    for label, module in checks:
+        try:
+            print(f"  OK    {label:16} {module.check()}")
+        except KeyError as e:
+            ok = False
+            print(f"  FAIL  {label:16} {e.args[0]} is missing from .env")
+        except Exception as e:
+            ok = False
+            print(f"  FAIL  {label:16} {e}")
+    print("\nAll connected. Next: python crosspost.py --once" if ok else "\nFix the FAIL lines above, then run --check again.")
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--check", action="store_true", help="test every account connection, post nothing")
     ap.add_argument("--once", action="store_true", help="check one time and exit")
     ap.add_argument("--dry-run", action="store_true", help="don't post anything")
     ap.add_argument("--backfill", action="store_true", help="(tiktok) on first run, also post videos that already exist")
     args = ap.parse_args()
 
+    if args.check:
+        check_connections()
+        return
     if args.once or args.dry_run:
         check_once(args.dry_run, args.backfill)
         return

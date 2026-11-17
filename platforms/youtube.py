@@ -20,3 +20,9 @@ def post(path, title, description):
     while response is None:
         _, response = request.next_chunk()
     return f"https://youtube.com/shorts/{response['id']}"
+
+
+def check():
+    from google.auth.transport.requests import Request
+    credentials().refresh(Request())  # fails if the Google login is wrong or expired
+    return "Google login works (YouTube can't be checked further without posting)"

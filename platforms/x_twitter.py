@@ -51,3 +51,8 @@ def post(path, caption):
 
     tweet = _check(requests.post(f"{API}/tweets", auth=auth, json={"text": caption, "media": {"media_ids": [media_id]}}))
     return f"https://x.com/i/status/{tweet['data']['id']}"
+
+
+def check():
+    me = _check(requests.get(f"{API}/users/me", auth=_auth()))
+    return f"can post as @{me['data']['username']}"
